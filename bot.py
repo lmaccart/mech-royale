@@ -1043,8 +1043,7 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
-            if MODE == "brawler" and kind != "lightning" and not have_special and dd > 70:
-                continue  # hold out for lightning unless it's right here
+            # flex: any special weapon now beats lightning later
             if abs(pz - z) > 20 and dd < 12:
                 pass
             if not zone_ok(px, py) or hunter_near(px, py):
