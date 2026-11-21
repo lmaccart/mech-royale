@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "orbit"
+MODE = "brawler"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -658,7 +658,14 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE == "berserk":
+            if MODE == "brawler":
+                if n_close >= 3:
+                    flee = True
+                if n_close >= 2 and hp_frac < 0.30:
+                    flee = True
+                if hp_frac < 0.12 and thp > 200:
+                    flee = True
+            elif MODE == "berserk":
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.45:
@@ -695,6 +702,8 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
+            if MODE == "brawler":
+                desired = 20.0 if have_light else 32.0
 
             # strafe clock
             if t >= self.strafe_until:
@@ -717,7 +726,7 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
-            if MODE == "berserk" and tdist > desired + 9 and energy > 25:
+            if MODE in ("berserk", "brawler") and tdist > desired + 9 and energy > 25:
                 boost = True
 
             if flee:
@@ -749,7 +758,8 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                if tdist < 55 and me["grounded"] and self.rng.random() < 0.07:
+                jump_p = 0.16 if MODE == "brawler" else 0.07
+                if tdist < 55 and me["grounded"] and self.rng.random() < jump_p:
                     act["jump"] = True
 
             # castle: never strafe off our own roof in a fair fight
@@ -1033,6 +1043,8 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
+            if MODE == "brawler" and kind != "lightning" and not have_special and dd > 70:
+                continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
                 pass
             if not zone_ok(px, py) or hunter_near(px, py):
