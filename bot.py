@@ -739,27 +739,37 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
-            if MODE in ("berserk", "brawler") and tdist > desired + 9 and energy > 25:
+            if MODE in ("berserk", "brawler", "duelist") and tdist > desired + 9 and energy > 25:
                 boost = True
 
             if flee:
-                # run: away from all threats, biased into the zone
+                # run: away from all threats first; zone pull only as a bias
+                # (it used to outweigh the away vector and run us at hunters)
                 fx, fy = 0.0, 0.0
                 for m in enemies:
                     dd = max(12.0, d2(x, y, m["pos"][0], m["pos"][1]))
-                    w = 160.0 / (dd * dd)
-                    fx += (x - m["pos"][0]) / dd * w * 160.0
-                    fy += (y - m["pos"][1]) / dd * w * 160.0
+                    w = 90.0 / dd
+                    fx += (x - m["pos"][0]) / dd * w
+                    fy += (y - m["pos"][1]) / dd * w
+                fd = math.hypot(fx, fy) or 1.0
+                fx, fy = fx / fd * 80.0, fy / fd * 80.0
                 zx, zy = next_c[0] - x, next_c[1] - y
                 zd = math.hypot(zx, zy) or 1.0
-                pull = 0.9 if outside_next > -40 else 0.35
-                dest = (clamp(x + fx + zx / zd * 70 * pull, -500, 545),
-                        clamp(y + fy + zy / zd * 70 * pull, -325, 380))
-                # keep flee destination inside next zone when possible
-                dd2 = d2(dest[0], dest[1], next_c[0], next_c[1])
-                if dd2 > next_r * 0.92 and next_r > 5:
-                    s = (next_r * 0.85) / dd2
-                    dest = (next_c[0] + (dest[0] - next_c[0]) * s, next_c[1] + (dest[1] - next_c[1]) * s)
+                pull = 55.0 if outside_next > 0 else (22.0 if outside_next > -40 else 10.0)
+                dest = (clamp(x + fx + zx / zd * pull, -500, 545),
+                        clamp(y + fy + zy / zd * pull, -325, 380))
+                # stay in the zone without rotating our escape toward its
+                # center: shorten the away run to the circle boundary instead
+                if next_r > 5 and d2(dest[0], dest[1], next_c[0], next_c[1]) > next_r * 0.95:
+                    ux, uy = fx / 80.0, fy / 80.0
+                    rx, ry = x - next_c[0], y - next_c[1]
+                    bq = rx * ux + ry * uy
+                    cq = rx * rx + ry * ry - (next_r * 0.92) ** 2
+                    disc = bq * bq - cq
+                    t_exit = 80.0
+                    if disc > 0:
+                        t_exit = clamp(-bq + math.sqrt(disc), 8.0, 80.0)
+                    dest = (x + ux * t_exit, y + uy * t_exit)
                 if MODE == "orbit" and self.anchor is not None and d2(x, y, self.anchor[0], self.anchor[1]) < 110:
                     # flee around the building, not in a straight line
                     cx, cy, r = self.anchor
@@ -1231,4 +1241,5 @@ class Bot:
         return [math.atan2(dy, dx), clamp(pitch, -0.7, 1.3)]
 
 
-mf.run(Bot)
+if __name__ == "__main__":
+    mf.run(Bot)
