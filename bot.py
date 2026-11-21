@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "castle"
+MODE = "orbit"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -383,6 +383,8 @@ class Bot:
         self.roof_bad = {}
         self.roof_cur = None
         self.roof_since = -1.0
+        self.anchor = None
+        self.orbit_dir = 1
         if self.world:
             for pr in self.world.prisms:
                 wdt = pr["maxx"] - pr["minx"]
@@ -736,6 +738,11 @@ class Bot:
                 if dd2 > next_r * 0.92 and next_r > 5:
                     s = (next_r * 0.85) / dd2
                     dest = (next_c[0] + (dest[0] - next_c[0]) * s, next_c[1] + (dest[1] - next_c[1]) * s)
+                if MODE == "orbit" and self.anchor is not None and d2(x, y, self.anchor[0], self.anchor[1]) < 110:
+                    # flee around the building, not in a straight line
+                    cx, cy, r = self.anchor
+                    ang = math.atan2(y - cy, x - cx) + self.orbit_dir * 1.15
+                    dest = (cx + math.cos(ang) * r, cy + math.sin(ang) * r)
                 mv, bst, jmp = self.navigate(me, t, dest, boost=energy > 8, speed=1.0)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
                 act["aim"] = aim_at(*tcenter)[0]  # face/shoot the hunter while running
@@ -894,6 +901,54 @@ class Bot:
             act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
             self.aim_cmd = list(act["aim"])
             return act
+
+        # ================= orbit: circle one building forever =================
+        if MODE == "orbit" and self.world:
+            if self.anchor is None or d2(self.anchor[0], self.anchor[1], next_c[0], next_c[1]) > next_r * 0.95:
+                best_a, best_sc = None, 1e18
+                for pr in self.world.prisms:
+                    wdt, hgt = pr["maxx"] - pr["minx"], pr["maxy"] - pr["miny"]
+                    if not (18 <= wdt <= 75 and 18 <= hgt <= 75):
+                        continue
+                    cx, cy = (pr["minx"] + pr["maxx"]) / 2, (pr["miny"] + pr["maxy"]) / 2
+                    if d2(cx, cy, next_c[0], next_c[1]) > next_r * 0.9:
+                        continue
+                    sc = d2(x, y, cx, cy)
+                    if sc < best_sc:
+                        best_sc, best_a = sc, (cx, cy, max(wdt, hgt) / 2 + 13.0)
+                self.anchor = best_a
+            # brief detour for loot at our feet, otherwise keep circling
+            loot = None
+            for p in obs.get("pickups", []):
+                if d2(x, y, p["pos"][0], p["pos"][1]) < 40:
+                    loot = (p["pos"][0], p["pos"][1], p["pos"][2])
+                    break
+            if loot is None:
+                for c in obs.get("cubes", []):
+                    if d2(x, y, c["pos"][0], c["pos"][1]) < 40:
+                        loot = (c["pos"][0], c["pos"][1], c["pos"][2])
+                        break
+            if loot is not None and d2(x, y, loot[0], loot[1]) > 3:
+                mv, bst, jmp = self.navigate(me, t, (loot[0], loot[1]), climb_z=loot[2])
+                act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                act["aim"] = [math.atan2(loot[1] - y, loot[0] - x), 0.0]
+                self.aim_cmd = list(act["aim"])
+                return act
+            if self.anchor is not None:
+                cx, cy, r = self.anchor
+                ang = math.atan2(y - cy, x - cx) + self.orbit_dir * 0.55
+                dest = (cx + math.cos(ang) * r, cy + math.sin(ang) * r)
+                mv, bst, jmp = self.navigate(
+                    me, t, dest,
+                    boost=(mem_threat is not None and energy > 25),
+                    speed=0.45 if healing else 1.0)
+                act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                if mem_threat is not None:
+                    act["aim"] = [math.atan2(mem_threat["pos"][1] - y, mem_threat["pos"][0] - x), 0.0]
+                else:
+                    act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
+                self.aim_cmd = list(act["aim"])
+                return act
 
         # ================= castle: take a roof, stay on it =================
         if MODE == "castle" and self.world and (have_special_c := any(
