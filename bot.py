@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "duelist"
+MODE = "scout"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -659,7 +659,7 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE in ("brawler", "duelist"):
+            if MODE in ("brawler", "duelist", "scout"):
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -703,10 +703,10 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
-            if MODE in ("brawler", "duelist"):
+            if MODE in ("brawler", "duelist", "scout"):
                 desired = 20.0 if have_light else 32.0
             juking = False
-            if MODE == "duelist":
+            if MODE in ("duelist", "scout"):
                 if not have_light and "lightning" in t_weaps:
                     desired = max(desired, 58.0)  # don't dive an arc with just a gun
                 # juke the moment their torso is actually lined up on us
@@ -739,7 +739,7 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
-            if MODE in ("berserk", "brawler", "duelist") and tdist > desired + 9 and energy > 25:
+            if MODE in ("berserk", "brawler", "duelist", "scout") and tdist > desired + 9 and energy > 25:
                 boost = True
 
             if flee:
@@ -781,7 +781,7 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                jump_p = 0.16 if MODE in ("brawler", "duelist") else 0.07
+                jump_p = 0.16 if MODE in ("brawler", "duelist", "scout") else 0.07
                 if tdist < 55 and me["grounded"] and (self.rng.random() < jump_p or juking):
                     act["jump"] = True
 
@@ -905,6 +905,18 @@ class Bot:
                 act["aim"] = [math.atan2(mem_threat["pos"][1] - y, mem_threat["pos"][0] - x), 0.0]
             self.aim_cmd = list(act["aim"])
             return act
+
+        # scout: NPC gunfire = a free 2-cube drone (and no squad escalation)
+        if MODE == "scout" and (me.get("cubes") or 0) < 7 and hp_frac > 0.55 and not zone_urgent:
+            for (st, brg, db, kind) in reversed(self.sounds):
+                if kind == "npc_gun" and t - st < 4.0 and db in ("near", "mid"):
+                    est = 30.0 if db == "near" else 100.0
+                    dest = (x + math.cos(brg) * est, y + math.sin(brg) * est)
+                    mv, bst, jmp = self.navigate(me, t, dest, boost=False)
+                    act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                    act["aim"] = [brg, 0.0]
+                    self.aim_cmd = list(act["aim"])
+                    return act
 
         # ---- supply drops
         drop_dest = None
@@ -1066,7 +1078,7 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
-            if MODE in ("brawler", "duelist") and kind != "lightning" and not have_special and dd > 70:
+            if MODE in ("brawler", "duelist", "scout") and kind != "lightning" and not have_special and dd > 70:
                 continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
                 pass
@@ -1096,7 +1108,7 @@ class Bot:
         if not healing and hp_frac > 0.6 and not alert:
             for n in npcs:
                 nd = d2(x, y, n["pos"][0], n["pos"][1])
-                if nd < 190 and zone_ok(n["pos"][0], n["pos"][1]) and not hunter_near(n["pos"][0], n["pos"][1], 110):
+                if nd < (280 if MODE == "scout" else 190) and zone_ok(n["pos"][0], n["pos"][1]) and not hunter_near(n["pos"][0], n["pos"][1], 110):
                     if npc_target is None or nd < d2(x, y, npc_target["pos"][0], npc_target["pos"][1]):
                         npc_target = n
         crate_target = None
@@ -1108,9 +1120,11 @@ class Bot:
                         crate_target = c
 
         if npc_target is not None:
-            consider(d2(x, y, npc_target["pos"][0], npc_target["pos"][1]) - 120, "npc", npc_target)
+            bonus = 240 if (MODE == "scout" and (me.get("cubes") or 0) < 8) else 120
+            consider(d2(x, y, npc_target["pos"][0], npc_target["pos"][1]) - bonus, "npc", npc_target)
         if crate_target is not None:
-            consider(d2(x, y, crate_target["pos"][0], crate_target["pos"][1]) - 55, "crate", crate_target)
+            bonus = 110 if (MODE == "scout" and (me.get("cubes") or 0) < 6) else 55
+            consider(d2(x, y, crate_target["pos"][0], crate_target["pos"][1]) - bonus, "crate", crate_target)
 
         gun_i = self.slot_of(me, "gun")
         gun = me["weapons"][gun_i] if gun_i >= 0 else None
@@ -1184,6 +1198,9 @@ class Bot:
                                          climb_z=data[2] if len(data) > 2 else None)
             act["move"], act["boost"], act["jump"] = mv, bst, jmp
             act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
+            if MODE == "scout" and not alert and (mv[0] or mv[1]):
+                # sweep the 120-degree FOV across our flanks while travelling
+                act["aim"] = [wrap(math.atan2(mv[1], mv[0]) + math.sin(t * 1.4) * 0.7), 0.0]
             if alert and mem_threat is not None:
                 act["aim"] = [math.atan2(mem_threat["pos"][1] - y, mem_threat["pos"][0] - x), 0.0]
             self.aim_cmd = list(act["aim"])
