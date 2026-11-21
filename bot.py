@@ -327,8 +327,9 @@ UPG_SCORE = {
 TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 
 # Submission experiments: one big lever per scored run.
-# v1 "berserk": hunt the hunter, press every 1v1, snowball kill loot.
-MODE = "berserk"
+# v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
+# zone, and make hunters climb up one at a time to fight us.
+MODE = "castle"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -377,6 +378,22 @@ class Bot:
         self.wander_until = -1.0
         self.climb_until = -1.0
         self.loot_site = None
+        # castle: candidate roofs (center, top) from world prisms
+        self.roofs = []
+        self.roof_bad = {}
+        self.roof_cur = None
+        self.roof_since = -1.0
+        if self.world:
+            for pr in self.world.prisms:
+                wdt = pr["maxx"] - pr["minx"]
+                hgt = pr["maxy"] - pr["miny"]
+                if wdt < 15 or hgt < 15:
+                    continue
+                cx = (pr["minx"] + pr["maxx"]) / 2
+                cy = (pr["miny"] + pr["maxy"]) / 2
+                rise = pr["top"] - self.world.terrain_h(cx, cy)
+                if 14 <= rise <= 55 and pr["top"] > self.surface(cx, cy) - 1:
+                    self.roofs.append((cx, cy, pr["top"]))
 
     # -- helpers -------------------------------------------------------------
     def surface(self, x, y, fallback=0.0):
@@ -728,6 +745,18 @@ class Bot:
                 if tdist < 55 and me["grounded"] and self.rng.random() < 0.07:
                     act["jump"] = True
 
+            # castle: never strafe off our own roof in a fair fight
+            if MODE == "castle" and not flee and self.world and (z - self.world.terrain_h(x, y)) > 3.0:
+                mvx_, mvy_ = act["move"]
+                if (mvx_ or mvy_) and self.surface(x + mvx_ * 6, y + mvy_ * 6, z) < z - 3:
+                    for s in (1, -1):
+                        rx_, ry_ = -mvy_ * s, mvx_ * s
+                        if self.surface(x + rx_ * 6, y + ry_ * 6, z) >= z - 3:
+                            act["move"] = [rx_, ry_]
+                            break
+                    else:
+                        act["move"] = [0.0, 0.0]
+
             # ---- weapon fire control. One torso aim: mortar (lobbed) excludes
             # the others; laser aims direct; gun leads; lightning is yaw-only
             # and stacks with whatever else is firing.
@@ -865,6 +894,63 @@ class Bot:
             act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
             self.aim_cmd = list(act["aim"])
             return act
+
+        # ================= castle: take a roof, stay on it =================
+        if MODE == "castle" and self.world and (have_special_c := any(
+                w and w["kind"] != "gun" for w in me["weapons"])) or (
+                MODE == "castle" and self.world and (z - self.world.terrain_h(x, y)) > 3.0):
+            on_roof = (z - self.world.terrain_h(x, y)) > 3.0
+            best_roof = None
+            best_score = 1e18
+            for (rx, ry, rt) in self.roofs:
+                if t < self.roof_bad.get((rx, ry), -1.0):
+                    continue
+                if d2(rx, ry, next_c[0], next_c[1]) > next_r * 0.92:
+                    continue
+                sc = d2(x, y, rx, ry) - (60.0 if on_roof and d2(x, y, rx, ry) < 32 else 0.0)
+                if sc < best_score:
+                    best_score, best_roof = sc, (rx, ry, rt)
+            if best_roof is not None:
+                rx, ry, rt = best_roof
+                if self.roof_cur != (rx, ry):
+                    self.roof_cur = (rx, ry)
+                    self.roof_since = t
+                if on_roof and d2(x, y, rx, ry) < 34 and abs(rt - z) < 5:
+                    # camp: grab same-roof loot, else hold center and scan
+                    dest = None
+                    for p in obs.get("pickups", []):
+                        if abs(p["pos"][2] - z) < 3 and d2(x, y, p["pos"][0], p["pos"][1]) < 30:
+                            dest = (p["pos"][0], p["pos"][1])
+                            break
+                    if dest is None:
+                        for c in obs.get("cubes", []):
+                            if abs(c["pos"][2] - z) < 3 and d2(x, y, c["pos"][0], c["pos"][1]) < 30:
+                                dest = (c["pos"][0], c["pos"][1])
+                                break
+                    if dest is not None and d2(x, y, dest[0], dest[1]) > 3:
+                        mv, bst, jmp = self.navigate(me, t, dest, climb_z=z)
+                        act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                        act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
+                    elif d2(x, y, rx, ry) > 7:
+                        mv, bst, jmp = self.navigate(me, t, (rx, ry), climb_z=rt)
+                        act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                        act["aim"] = [math.atan2(ry - y, rx - x), 0.0]
+                    else:
+                        act["move"] = [0.0, 0.0]
+                        act["aim"] = [wrap(self.scan_yaw + 1.05 * dt * 3.0), 0.0]
+                    self.aim_cmd = list(act["aim"])
+                    return act
+                # go take the roof
+                if t - self.roof_since > 25:
+                    self.roof_bad[(rx, ry)] = t + 60
+                    self.roof_cur = None
+                mv, bst, jmp = self.navigate(me, t, (rx, ry),
+                                             boost=d2(x, y, rx, ry) > 80 and energy > 35,
+                                             climb_z=rt)
+                act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                act["aim"] = [math.atan2(ry - y, rx - x), 0.0]
+                self.aim_cmd = list(act["aim"])
+                return act
 
         # ================= farming =================
         def zone_ok(px, py):
