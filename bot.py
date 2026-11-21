@@ -326,6 +326,18 @@ UPG_SCORE = {
 }
 TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 
+# Submission experiments: one big lever per scored run.
+# v1 "berserk": hunt the hunter, press every 1v1, snowball kill loot.
+MODE = "berserk"
+UPG_SCORE_BERSERK = {
+    "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
+    "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
+    "servos": 70, "laser_charge": 66, "lightning_range": 64, "gyros": 62,
+    "lightning_chain": 60, "gun_velocity": 58, "mortar_reload": 56,
+    "laser_pierce": 54, "capacitor": 50, "gun_mag": 48, "mortar_splash": 46,
+    "reactor": 44, "jets": 40, "sensors": 36, "mortar_velocity": 34,
+}
+
 
 class Bot:
     name = "mech-royale"
@@ -364,6 +376,7 @@ class Bot:
         self.wander_pt = None
         self.wander_until = -1.0
         self.climb_until = -1.0
+        self.loot_site = None
 
     # -- helpers -------------------------------------------------------------
     def surface(self, x, y, fallback=0.0):
@@ -505,6 +518,8 @@ class Bot:
                 self.last_dealt_t = t
             elif ty == "kill":
                 tgt = self.enemies.pop(e.get("target"), None)
+                if tgt is not None:
+                    self.loot_site = (tgt["pos"][0], tgt["pos"][1], tgt["pos"][2], t)
         seen_mech = {}
         npcs = []
         for m in obs.get("mechs", []):
@@ -543,7 +558,8 @@ class Bot:
         # ---- offer
         if obs.get("offer"):
             ch = obs["offer"]["choices"]
-            best = max(range(len(ch)), key=lambda i: UPG_SCORE.get(ch[i]["id"], 30))
+            table = UPG_SCORE_BERSERK if MODE == "berserk" else UPG_SCORE
+            best = max(range(len(ch)), key=lambda i: table.get(ch[i]["id"], 30))
             act["pick"] = best
 
         # ---- take weapons under our feet
@@ -623,14 +639,22 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if n_close >= 2 and not (hp_frac > 0.85 and thp < 250):
-                flee = True
-            if hp_frac < 0.30 and thp > 200 and tdist < 140:
-                flee = True
-            if hp_frac < 0.55 and thp > hp + 380 and tdist < 90 and n_close >= 1:
-                flee = True
-            if t - self.last_damage_t < 0.5 and hp_frac < 0.22 and thp > 120:
-                flee = True
+            if MODE == "berserk":
+                if n_close >= 3:
+                    flee = True
+                if n_close >= 2 and hp_frac < 0.45:
+                    flee = True
+                if hp_frac < 0.16 and thp > 160:
+                    flee = True
+            else:
+                if n_close >= 2 and not (hp_frac > 0.85 and thp < 250):
+                    flee = True
+                if hp_frac < 0.30 and thp > 200 and tdist < 140:
+                    flee = True
+                if hp_frac < 0.55 and thp > hp + 380 and tdist < 90 and n_close >= 1:
+                    flee = True
+                if t - self.last_damage_t < 0.5 and hp_frac < 0.22 and thp > 120:
+                    flee = True
 
             # desired range by matchup
             have_light = self.slot_of(me, "lightning") >= 0
@@ -648,6 +672,10 @@ class Bot:
                 desired = 62.0
             if thp < 280 and hp_frac > 0.5:  # press a finish
                 desired = min(desired, 34.0 if have_light else 45.0)
+            if MODE == "berserk":
+                desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
+                if thp < 500 and hp_frac > 0.45:
+                    desired = min(desired, 30.0)
 
             # strafe clock
             if t >= self.strafe_until:
@@ -670,6 +698,8 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
+            if MODE == "berserk" and tdist > desired + 9 and energy > 25:
+                boost = True
 
             if flee:
                 # run: away from all threats, biased into the zone
@@ -769,7 +799,7 @@ class Bot:
             return act
 
         # ================= no visible mech: threats from memory/sound ====
-        healing = hp_frac < 0.62 and (t - self.last_damage_t) > 1.0
+        healing = hp_frac < (0.38 if MODE == "berserk" else 0.62) and (t - self.last_damage_t) > 1.0
         mem_threat = None
         mem_d = 1e9
         for e in self.enemies.values():
@@ -783,6 +813,14 @@ class Bot:
                 snd_threat = (brg, db)
                 break
         alert = mem_threat is not None and mem_d < 130
+        if MODE == "berserk" and mem_threat is not None and hp_frac > 0.5 and not zone_urgent:
+            # hunt the hunter: close on last known position before it resets
+            dest = (mem_threat["pos"][0], mem_threat["pos"][1])
+            mv, bst, jmp = self.navigate(me, t, dest, boost=energy > 25)
+            act["move"], act["boost"], act["jump"] = mv, bst, jmp
+            act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
+            self.aim_cmd = list(act["aim"])
+            return act
         if (healing or hp_frac < 0.3) and (alert or snd_threat) and not zone_urgent:
             # break away quietly and heal
             if mem_threat is not None:
@@ -868,6 +906,12 @@ class Bot:
             if not zone_ok(cx_, cy_) or hunter_near(cx_, cy_, 70):
                 continue
             consider(dd - 70, "cube", (cx_, cy_, cz_, cid))
+        if self.loot_site is not None:
+            lx, ly, lz, lt = self.loot_site
+            if t - lt > 25 or d2(x, y, lx, ly) < 5:
+                self.loot_site = None
+            elif zone_ok(lx, ly):
+                consider(d2(x, y, lx, ly) - 320, "cube", (lx, ly, lz, -1))
         if drop_dest is not None:
             consider(d2(x, y, drop_dest[0], drop_dest[1]) - (300 if hp_frac < 0.7 else 160),
                      "drop", drop_dest)
