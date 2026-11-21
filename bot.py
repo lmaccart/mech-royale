@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "brawler"
+MODE = "brawler2"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -577,7 +577,7 @@ class Bot:
         # ---- offer
         if obs.get("offer"):
             ch = obs["offer"]["choices"]
-            table = UPG_SCORE_BERSERK if MODE == "berserk" else UPG_SCORE
+            table = UPG_SCORE_BERSERK if MODE in ("berserk", "brawler", "brawler2") else UPG_SCORE
             best = max(range(len(ch)), key=lambda i: table.get(ch[i]["id"], 30))
             act["pick"] = best
 
@@ -658,7 +658,7 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE == "brawler":
+            if MODE in ("brawler", "brawler2"):
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -702,8 +702,10 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
-            if MODE == "brawler":
+            if MODE in ("brawler", "brawler2"):
                 desired = 20.0 if have_light else 32.0
+            if MODE == "brawler2":
+                desired = 18.0 if have_light else 28.0
 
             # strafe clock
             if t >= self.strafe_until:
@@ -758,7 +760,7 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                jump_p = 0.16 if MODE == "brawler" else 0.07
+                jump_p = 0.22 if MODE == "brawler2" else (0.16 if MODE in ("brawler", "brawler2") else 0.07)
                 if tdist < 55 and me["grounded"] and self.rng.random() < jump_p:
                     act["jump"] = True
 
@@ -859,6 +861,19 @@ class Bot:
                 snd_threat = (brg, db)
                 break
         alert = mem_threat is not None and mem_d < 130
+        if MODE == "brawler2" and hp_frac > 0.5 and not zone_urgent:
+            # hunt gunfire: run at the newest near/mid combat sound
+            for (st, brg, db, kind) in reversed(self.sounds):
+                if t - st < 3.0 and db in ("near", "mid"):
+                    est = 35.0 if db == "near" else 110.0
+                    dest = (x + math.cos(brg) * est, y + math.sin(brg) * est)
+                    if d2(dest[0], dest[1], next_c[0], next_c[1]) < next_r + 50:
+                        mv, bst, jmp = self.navigate(me, t, dest, boost=energy > 25)
+                        act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                        act["aim"] = [brg, 0.0]
+                        self.aim_cmd = list(act["aim"])
+                        return act
+                    break
         if MODE == "berserk" and mem_threat is not None and hp_frac > 0.5 and not zone_urgent:
             # hunt the hunter: close on last known position before it resets
             dest = (mem_threat["pos"][0], mem_threat["pos"][1])
@@ -1043,7 +1058,7 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
-            if MODE == "brawler" and kind != "lightning" and not have_special and dd > 70:
+            if MODE in ("brawler", "brawler2") and kind != "lightning" and not have_special and dd > 70:
                 continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
                 pass
@@ -1073,11 +1088,13 @@ class Bot:
         if not healing and hp_frac > 0.6 and not alert:
             for n in npcs:
                 nd = d2(x, y, n["pos"][0], n["pos"][1])
+                if MODE == "brawler2" and nd > 80:
+                    continue
                 if nd < 190 and zone_ok(n["pos"][0], n["pos"][1]) and not hunter_near(n["pos"][0], n["pos"][1], 110):
                     if npc_target is None or nd < d2(x, y, npc_target["pos"][0], npc_target["pos"][1]):
                         npc_target = n
         crate_target = None
-        if not healing and hp_frac > 0.55 and not alert:
+        if MODE != "brawler2" and not healing and hp_frac > 0.55 and not alert:
             for c in obs.get("crates", []):
                 cd = d2(x, y, c["pos"][0], c["pos"][1])
                 if cd < 170 and zone_ok(c["pos"][0], c["pos"][1]) and not hunter_near(c["pos"][0], c["pos"][1], 100):
