@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "brawler"
+MODE = "ghost"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -658,7 +658,9 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE == "brawler":
+            if MODE == "ghost":
+                flee = True
+            elif MODE == "brawler":
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -838,7 +840,7 @@ class Bot:
                 if not los_t or tdist > 110 or flee:
                     act["reload"] = True
             act["aim"] = aim
-            act["fire"] = fire
+            act["fire"] = [False, False] if MODE == "ghost" else fire
             if any(fire):
                 self.last_shot_t = t
             self.aim_cmd = list(act["aim"])
@@ -1070,14 +1072,14 @@ class Bot:
                      "drop", drop_dest)
         # NPC farm: safe, healthy, no mech threat memory nearby
         npc_target = None
-        if not healing and hp_frac > 0.6 and not alert:
+        if MODE != "ghost" and not healing and hp_frac > 0.6 and not alert:
             for n in npcs:
                 nd = d2(x, y, n["pos"][0], n["pos"][1])
                 if nd < 190 and zone_ok(n["pos"][0], n["pos"][1]) and not hunter_near(n["pos"][0], n["pos"][1], 110):
                     if npc_target is None or nd < d2(x, y, npc_target["pos"][0], npc_target["pos"][1]):
                         npc_target = n
         crate_target = None
-        if not healing and hp_frac > 0.55 and not alert:
+        if MODE != "ghost" and not healing and hp_frac > 0.55 and not alert:
             for c in obs.get("crates", []):
                 cd = d2(x, y, c["pos"][0], c["pos"][1])
                 if cd < 170 and zone_ok(c["pos"][0], c["pos"][1]) and not hunter_near(c["pos"][0], c["pos"][1], 100):
@@ -1156,8 +1158,8 @@ class Bot:
             dd = d2(x, y, dest[0], dest[1])
             sneak = healing and (alert or snd_threat)
             mv, bst, jmp = self.navigate(me, t, dest,
-                                         boost=dd > 70 and energy > 35 and not sneak,
-                                         speed=0.4 if sneak else 1.0,
+                                         boost=dd > 70 and energy > 35 and not sneak and MODE != "ghost",
+                                         speed=0.4 if (sneak or MODE == "ghost") else 1.0,
                                          climb_z=data[2] if len(data) > 2 else None)
             act["move"], act["boost"], act["jump"] = mv, bst, jmp
             act["aim"] = [math.atan2(dest[1] - y, dest[0] - x), 0.0]
