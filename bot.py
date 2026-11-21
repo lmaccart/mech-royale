@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "duelist"
+MODE = "cover"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -370,6 +370,8 @@ class Bot:
         self.strafe_dir = 1
         self.strafe_until = 0.0
         self.juke_at = -1.0
+        self.cover_pt = None
+        self.cover_until = -1.0
         self.target_id = None
         self.target_until = 0.0
         self.stuck_xy = None
@@ -659,7 +661,7 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE in ("brawler", "duelist"):
+            if MODE in ("brawler", "duelist", "cover"):
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -703,10 +705,10 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
-            if MODE in ("brawler", "duelist"):
+            if MODE in ("brawler", "duelist", "cover"):
                 desired = 20.0 if have_light else 32.0
             juking = False
-            if MODE == "duelist":
+            if MODE in ("duelist", "cover"):
                 if not have_light and "lightning" in t_weaps:
                     desired = max(desired, 58.0)  # don't dive an arc with just a gun
                 # juke the moment their torso is actually lined up on us
@@ -739,7 +741,7 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
-            if MODE in ("berserk", "brawler", "duelist") and tdist > desired + 9 and energy > 25:
+            if MODE in ("berserk", "brawler", "duelist", "cover") and tdist > desired + 9 and energy > 25:
                 boost = True
 
             if flee:
@@ -781,9 +783,39 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                jump_p = 0.16 if MODE in ("brawler", "duelist") else 0.07
+                jump_p = 0.16 if MODE in ("brawler", "duelist", "cover") else 0.07
                 if tdist < 55 and me["grounded"] and (self.rng.random() < jump_p or juking):
                     act["jump"] = True
+
+            # cover: dip behind a building for reloads/cooldowns/charges
+            if MODE == "cover" and not flee:
+                if t >= self.cover_until or self.cover_pt is None:
+                    self.cover_pt = self.find_cover(x, y, z, tx, ty)
+                    self.cover_until = t + 1.2
+                if self.cover_pt is not None:
+                    cpx, cpy = self.cover_pt
+                    gi = self.slot_of(me, "gun")
+                    gw = me["weapons"][gi] if gi >= 0 else None
+                    li = self.slot_of(me, "laser")
+                    lw = me["weapons"][li] if li >= 0 else None
+                    efrac = thp / max(1.0, tgt.get("max_hp", 1400))
+                    dip = bool(tgt.get("charging"))
+                    if gw is not None and (gw.get("reload") or 0) > 0.25:
+                        dip = True
+                    if lw is not None and (lw.get("cooldown") or 0) > 0.5 and (lw.get("charge") or 0) <= 0:
+                        dip = True
+                    if hp_frac + 0.22 < efrac:
+                        dip = True
+                    if dip:
+                        if d2(x, y, cpx, cpy) > 2.5:
+                            mv, bst, jmp = self.combat_move(me, t, cpx - x, cpy - y,
+                                                            boost=d2(x, y, cpx, cpy) > 16 and energy > 15)
+                            act["move"], act["boost"] = mv, bst
+                        else:
+                            act["move"] = [0.0, 0.0]
+                    elif d2(x, y, cpx, cpy) > 22:
+                        mv, bst, jmp = self.combat_move(me, t, cpx - x, cpy - y)
+                        act["move"] = mv
 
             # castle: never strafe off our own roof in a fair fight
             if MODE == "castle" and not flee and self.world and (z - self.world.terrain_h(x, y)) > 3.0:
@@ -1066,7 +1098,7 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
-            if MODE in ("brawler", "duelist") and kind != "lightning" and not have_special and dd > 70:
+            if MODE in ("brawler", "duelist", "cover") and kind != "lightning" and not have_special and dd > 70:
                 continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
                 pass
@@ -1210,6 +1242,32 @@ class Bot:
             act["aim"] = [wrap(yaw), 0.0]
         self.aim_cmd = list(act["aim"])
         return act
+
+    def find_cover(self, x, y, z, ex, ey):
+        """Point just behind the nearest building (from the enemy), or None."""
+        if not self.world:
+            return None
+        best, best_d = None, 58.0
+        for pr in self.world.prisms:
+            if pr["maxx"] < x - 55 or pr["minx"] > x + 55 or pr["maxy"] < y - 55 or pr["miny"] > y + 55:
+                continue
+            cx, cy = (pr["minx"] + pr["maxx"]) / 2, (pr["miny"] + pr["maxy"]) / 2
+            ax, ay = cx - ex, cy - ey
+            ad = math.hypot(ax, ay)
+            if ad < 5:
+                continue
+            half = 0.5 * math.hypot(pr["maxx"] - pr["minx"], pr["maxy"] - pr["miny"])
+            px, py = cx + ax / ad * (half + 4.5), cy + ay / ad * (half + 4.5)
+            dd = d2(x, y, px, py)
+            if dd > best_d:
+                continue
+            if abs(self.surface(px, py, z) - z) > 4:
+                continue
+            # the building must actually hide us from the enemy's eye
+            if not self.world.los_blocked(ex, ey, z + 8, px, py, z + 4.5):
+                continue
+            best, best_d = (px, py), dd
+        return best
 
     def _mortar_aim(self, me, tgt, mw):
         x, y, z = me["pos"]
