@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "brawler"
+MODE = "duelist"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -369,6 +369,7 @@ class Bot:
         self.last_attacker = None
         self.strafe_dir = 1
         self.strafe_until = 0.0
+        self.juke_at = -1.0
         self.target_id = None
         self.target_until = 0.0
         self.stuck_xy = None
@@ -658,7 +659,7 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE == "brawler":
+            if MODE in ("brawler", "duelist"):
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -702,8 +703,20 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
-            if MODE == "brawler":
+            if MODE in ("brawler", "duelist"):
                 desired = 20.0 if have_light else 32.0
+            juking = False
+            if MODE == "duelist":
+                if not have_light and "lightning" in t_weaps:
+                    desired = max(desired, 58.0)  # don't dive an arc with just a gun
+                # juke the moment their torso is actually lined up on us
+                brg_to_us = math.atan2(y - ty, x - tx)
+                if (abs(wrap((tgt.get("aim") or [0, 0])[0] - brg_to_us)) < 0.14 and tdist < 100
+                        and t >= self.juke_at):
+                    juking = True
+                    self.juke_at = t + 0.45
+                    self.strafe_dir = -self.strafe_dir
+                    self.strafe_until = t + 0.30
 
             # strafe clock
             if t >= self.strafe_until:
@@ -758,8 +771,8 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                jump_p = 0.16 if MODE == "brawler" else 0.07
-                if tdist < 55 and me["grounded"] and self.rng.random() < jump_p:
+                jump_p = 0.16 if MODE in ("brawler", "duelist") else 0.07
+                if tdist < 55 and me["grounded"] and (self.rng.random() < jump_p or juking):
                     act["jump"] = True
 
             # castle: never strafe off our own roof in a fair fight
@@ -1043,7 +1056,7 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
-            if MODE == "brawler" and kind != "lightning" and not have_special and dd > 70:
+            if MODE in ("brawler", "duelist") and kind != "lightning" and not have_special and dd > 70:
                 continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
                 pass
