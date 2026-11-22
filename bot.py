@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "duelist"
+MODE = "bomber"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -600,7 +600,7 @@ class Bot:
                         low_tier, low_slot = min(specials)
                         wlow = me["weapons"][low_slot]
                         charging = wlow and wlow.get("kind") == "laser" and (wlow.get("charge") or 0) > 0
-                        if TIER.get(kind, 0) > low_tier and not charging:
+                        if (TIER.get(kind, 0) > low_tier or (MODE == "bomber" and kind == "mortar")) and not charging:
                             act["take"] = p["id"]
                             act["drop"] = low_slot
                             break
@@ -659,7 +659,7 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE in ("brawler", "duelist"):
+            if MODE in ("brawler", "duelist", "bomber"):
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -703,10 +703,12 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
-            if MODE in ("brawler", "duelist"):
+            if MODE in ("brawler", "duelist", "bomber"):
                 desired = 20.0 if have_light else 32.0
+            if MODE == "bomber" and have_mortar:
+                desired = 85.0
             juking = False
-            if MODE == "duelist":
+            if MODE in ("duelist", "bomber"):
                 if not have_light and "lightning" in t_weaps:
                     desired = max(desired, 58.0)  # don't dive an arc with just a gun
                 # juke the moment their torso is actually lined up on us
@@ -739,7 +741,7 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
-            if MODE in ("berserk", "brawler", "duelist") and tdist > desired + 9 and energy > 25:
+            if MODE in ("berserk", "brawler", "duelist", "bomber") and tdist > desired + 9 and energy > 25:
                 boost = True
 
             if flee:
@@ -781,7 +783,7 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                jump_p = 0.16 if MODE in ("brawler", "duelist") else 0.07
+                jump_p = 0.16 if MODE in ("brawler", "duelist", "bomber") else 0.07
                 if tdist < 55 and me["grounded"] and (self.rng.random() < jump_p or juking):
                     act["jump"] = True
 
@@ -842,7 +844,7 @@ class Bot:
                     gun_ok = gun_ok and tdist < 95
             # mortar: only when it is the right tool and the laser is idle
             mortar_fired = False
-            if not laser_busy and not fire[light_i] and mortar_i >= 0 and (not los_t or tdist > 55) and 22 < tdist < 210:
+            if not laser_busy and not fire[light_i] and mortar_i >= 0 and (not los_t or tdist > 55 or MODE == "bomber") and 22 < tdist < 210:
                 mw = me["weapons"][mortar_i]
                 if (mw.get("cooldown") or 0) <= 0.05:
                     sol = self._mortar_aim(me, tgt, mw)
@@ -1066,6 +1068,8 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
+            if MODE == "bomber" and kind != "mortar" and "mortar" not in held and dd > 70:
+                continue  # hold out for a mortar unless it's right here
             if MODE in ("brawler", "duelist") and kind != "lightning" and not have_special and dd > 70:
                 continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
@@ -1073,6 +1077,8 @@ class Bot:
             if not zone_ok(px, py) or hunter_near(px, py):
                 continue
             want = (not have_special) or TIER.get(kind, 0) > worst_tier
+            if MODE == "bomber" and kind == "mortar" and "mortar" not in held:
+                want = True
             if want:
                 consider(dd - (260 if not have_special else 90), "pickup", (px, py, pz, pid))
         for cid, (cx_, cy_, cz_, ct) in self.cubes_mem.items():
