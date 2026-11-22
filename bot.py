@@ -329,7 +329,7 @@ TIER = {"gun": 0, "mortar": 1, "laser": 2, "lightning": 3}
 # Submission experiments: one big lever per scored run.
 # v2 "castle": get a special weapon, jet onto a mid-rise roof inside the
 # zone, and make hunters climb up one at a time to fight us.
-MODE = "bomber"
+MODE = "phantom"
 UPG_SCORE_BERSERK = {
     "gun_damage": 100, "gun_rate": 98, "armor": 90, "plating": 86,
     "laser_damage": 88, "lightning_efficiency": 84, "nanites": 72,
@@ -370,6 +370,12 @@ class Bot:
         self.strafe_dir = 1
         self.strafe_until = 0.0
         self.juke_at = -1.0
+        self.relocate_until = -1.0
+        self.relocate_dest = None
+        self.silent_until = -1.0
+        self.pending_relocate = False
+        self.loot_deadline = -1.0
+        self.start_relocate = False
         self.target_id = None
         self.target_until = 0.0
         self.stuck_xy = None
@@ -540,6 +546,8 @@ class Bot:
                 tgt = self.enemies.pop(e.get("target"), None)
                 if tgt is not None:
                     self.loot_site = (tgt["pos"][0], tgt["pos"][1], tgt["pos"][2], t)
+                if MODE == "phantom":
+                    self.pending_relocate = True
         seen_mech = {}
         npcs = []
         for m in obs.get("mechs", []):
@@ -600,7 +608,7 @@ class Bot:
                         low_tier, low_slot = min(specials)
                         wlow = me["weapons"][low_slot]
                         charging = wlow and wlow.get("kind") == "laser" and (wlow.get("charge") or 0) > 0
-                        if (TIER.get(kind, 0) > low_tier or (MODE == "bomber" and kind == "mortar")) and not charging:
+                        if TIER.get(kind, 0) > low_tier and not charging:
                             act["take"] = p["id"]
                             act["drop"] = low_slot
                             break
@@ -659,7 +667,7 @@ class Bot:
             los_t = self.los(muzzle, list(tcenter))
             t_weaps = tgt.get("weapons", []) or []
             flee = False
-            if MODE in ("brawler", "duelist", "bomber"):
+            if MODE in ("brawler", "duelist", "phantom"):
                 if n_close >= 3:
                     flee = True
                 if n_close >= 2 and hp_frac < 0.30:
@@ -703,12 +711,10 @@ class Bot:
                 desired = 26.0 if have_light else (52.0 if have_laser else 40.0)
                 if thp < 500 and hp_frac > 0.45:
                     desired = min(desired, 30.0)
-            if MODE in ("brawler", "duelist", "bomber"):
+            if MODE in ("brawler", "duelist", "phantom"):
                 desired = 20.0 if have_light else 32.0
-            if MODE == "bomber" and have_mortar:
-                desired = 85.0
             juking = False
-            if MODE in ("duelist", "bomber"):
+            if MODE in ("duelist", "phantom"):
                 if not have_light and "lightning" in t_weaps:
                     desired = max(desired, 58.0)  # don't dive an arc with just a gun
                 # juke the moment their torso is actually lined up on us
@@ -741,7 +747,7 @@ class Bot:
                 mvx, mvy = perp_x, perp_y
             if tdist > 130:
                 boost = energy > 30
-            if MODE in ("berserk", "brawler", "duelist", "bomber") and tdist > desired + 9 and energy > 25:
+            if MODE in ("berserk", "brawler", "duelist", "phantom") and tdist > desired + 9 and energy > 25:
                 boost = True
 
             if flee:
@@ -783,7 +789,7 @@ class Bot:
             else:
                 mv, bst, jmp = self.combat_move(me, t, mvx, mvy, boost=boost)
                 act["move"], act["boost"], act["jump"] = mv, bst, jmp
-                jump_p = 0.16 if MODE in ("brawler", "duelist", "bomber") else 0.07
+                jump_p = 0.16 if MODE in ("brawler", "duelist", "phantom") else 0.07
                 if tdist < 55 and me["grounded"] and (self.rng.random() < jump_p or juking):
                     act["jump"] = True
 
@@ -844,7 +850,7 @@ class Bot:
                     gun_ok = gun_ok and tdist < 95
             # mortar: only when it is the right tool and the laser is idle
             mortar_fired = False
-            if not laser_busy and not fire[light_i] and mortar_i >= 0 and (not los_t or tdist > 55 or MODE == "bomber") and 22 < tdist < 210:
+            if not laser_busy and not fire[light_i] and mortar_i >= 0 and (not los_t or tdist > 55) and 22 < tdist < 210:
                 mw = me["weapons"][mortar_i]
                 if (mw.get("cooldown") or 0) <= 0.05:
                     sol = self._mortar_aim(me, tgt, mw)
@@ -907,6 +913,60 @@ class Bot:
                 act["aim"] = [math.atan2(mem_threat["pos"][1] - y, mem_threat["pos"][0] - x), 0.0]
             self.aim_cmd = list(act["aim"])
             return act
+
+        # ================= phantom: kill -> vanish -> go silent =================
+        silent = False
+        if MODE == "phantom":
+            if hp_frac < 0.5 and not enemies and (t - self.last_damage_t) < 6 and t > self.relocate_until:
+                self.pending_relocate = True  # hard fight, no kill: still vanish
+            if self.pending_relocate:
+                self.pending_relocate = False
+                self.start_relocate = True
+                if self.loot_site is not None and d2(x, y, self.loot_site[0], self.loot_site[1]) < 28:
+                    self.loot_deadline = t + 3.0  # grab the kill's cubes, then go
+                else:
+                    self.loot_deadline = -1.0
+            if self.loot_deadline > 0 and t < self.loot_deadline and self.loot_site is not None \
+                    and d2(x, y, self.loot_site[0], self.loot_site[1]) > 4:
+                mv, bst, jmp = self.navigate(me, t, (self.loot_site[0], self.loot_site[1]),
+                                             climb_z=self.loot_site[2])
+                act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                act["aim"] = [math.atan2(self.loot_site[1] - y, self.loot_site[0] - x), 0.0]
+                self.aim_cmd = list(act["aim"])
+                return act
+            if self.start_relocate and (self.loot_deadline <= 0 or t >= self.loot_deadline):
+                self.loot_deadline = -1.0
+                self.start_relocate = False
+                kx, ky = (self.loot_site[0], self.loot_site[1]) if self.loot_site else (x, y)
+                ax, ay = x - kx, y - ky
+                ad = math.hypot(ax, ay) or 1.0
+                zx, zy = next_c[0] - x, next_c[1] - y
+                zd = math.hypot(zx, zy) or 1.0
+                dx = ax / ad + 0.7 * zx / zd
+                dy = ay / ad + 0.7 * zy / zd
+                dd = math.hypot(dx, dy) or 1.0
+                dest = (x + dx / dd * 175.0, y + dy / dd * 175.0)
+                dc = d2(dest[0], dest[1], next_c[0], next_c[1])
+                if dc > next_r * 0.85 and next_r > 10:
+                    sc = (next_r * 0.85) / dc
+                    dest = (next_c[0] + (dest[0] - next_c[0]) * sc,
+                            next_c[1] + (dest[1] - next_c[1]) * sc)
+                self.relocate_dest = dest
+                self.relocate_until = t + 17.0
+                self.silent_until = t + 40.0
+            if self.relocate_dest is not None and t < self.relocate_until:
+                if d2(x, y, self.relocate_dest[0], self.relocate_dest[1]) < 14:
+                    self.relocate_until = -1.0
+                else:
+                    mv, bst, jmp = self.navigate(me, t, self.relocate_dest, boost=energy > 10)
+                    act["move"], act["boost"], act["jump"] = mv, bst, jmp
+                    if mem_threat is not None:
+                        act["aim"] = [math.atan2(mem_threat["pos"][1] - y, mem_threat["pos"][0] - x), 0.0]
+                    else:
+                        act["aim"] = [math.atan2(self.relocate_dest[1] - y, self.relocate_dest[0] - x), 0.0]
+                    self.aim_cmd = list(act["aim"])
+                    return act
+            silent = t < self.silent_until
 
         # ---- supply drops
         drop_dest = None
@@ -1068,17 +1128,13 @@ class Bot:
             if kind == "gun" or kind in held:
                 continue
             dd = d2(x, y, px, py)
-            if MODE == "bomber" and kind != "mortar" and "mortar" not in held and dd > 70:
-                continue  # hold out for a mortar unless it's right here
-            if MODE in ("brawler", "duelist") and kind != "lightning" and not have_special and dd > 70:
+            if MODE in ("brawler", "duelist", "phantom") and kind != "lightning" and not have_special and dd > 70:
                 continue  # hold out for lightning unless it's right here
             if abs(pz - z) > 20 and dd < 12:
                 pass
             if not zone_ok(px, py) or hunter_near(px, py):
                 continue
             want = (not have_special) or TIER.get(kind, 0) > worst_tier
-            if MODE == "bomber" and kind == "mortar" and "mortar" not in held:
-                want = True
             if want:
                 consider(dd - (260 if not have_special else 90), "pickup", (px, py, pz, pid))
         for cid, (cx_, cy_, cz_, ct) in self.cubes_mem.items():
@@ -1088,7 +1144,7 @@ class Bot:
             if not zone_ok(cx_, cy_) or hunter_near(cx_, cy_, 70):
                 continue
             consider(dd - 70, "cube", (cx_, cy_, cz_, cid))
-        if self.loot_site is not None:
+        if self.loot_site is not None and not silent:
             lx, ly, lz, lt = self.loot_site
             if t - lt > 25 or d2(x, y, lx, ly) < 5:
                 self.loot_site = None
@@ -1099,14 +1155,14 @@ class Bot:
                      "drop", drop_dest)
         # NPC farm: safe, healthy, no mech threat memory nearby
         npc_target = None
-        if not healing and hp_frac > 0.6 and not alert:
+        if not silent and not healing and hp_frac > 0.6 and not alert:
             for n in npcs:
                 nd = d2(x, y, n["pos"][0], n["pos"][1])
                 if nd < 190 and zone_ok(n["pos"][0], n["pos"][1]) and not hunter_near(n["pos"][0], n["pos"][1], 110):
                     if npc_target is None or nd < d2(x, y, npc_target["pos"][0], npc_target["pos"][1]):
                         npc_target = n
         crate_target = None
-        if not healing and hp_frac > 0.55 and not alert:
+        if not silent and not healing and hp_frac > 0.55 and not alert:
             for c in obs.get("crates", []):
                 cd = d2(x, y, c["pos"][0], c["pos"][1])
                 if cd < 170 and zone_ok(c["pos"][0], c["pos"][1]) and not hunter_near(c["pos"][0], c["pos"][1], 100):
@@ -1183,7 +1239,7 @@ class Bot:
             # pickup / cube / drop: just go there
             dest = (data[0], data[1])
             dd = d2(x, y, dest[0], dest[1])
-            sneak = healing and (alert or snd_threat)
+            sneak = (healing and (alert or snd_threat)) or silent
             mv, bst, jmp = self.navigate(me, t, dest,
                                          boost=dd > 70 and energy > 35 and not sneak,
                                          speed=0.4 if sneak else 1.0,
